@@ -72,13 +72,11 @@ def python_repl_tool(
         return f"Failed to execute. Error: {repr(e)}"
     return f"Successfully executed:\n```python\n{code}\n```\nStdout: {result}"
 
+
 # LLM
-
-
 groq = ChatGroq(model='llama-3.3-70b-versatile')
 
 # Nodes and Agents
-
 members = ["pandas_agent", "matplotlib_agent", "sklearn_agent"]
 # Our team supervisor is an LLM node. It just picks the next agent to process
 # and decides when the work is completed
