@@ -1,16 +1,13 @@
 from typing import Annotated
 from langchain_core.tools import tool
 from langchain_experimental.utilities import PythonREPL
-
 from typing import Literal, Dict
 from typing_extensions import TypedDict
-
 # from langchain_huggingface import HuggingFaceEndpoint, HuggingFacePipeline
 from langchain_groq import ChatGroq
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import Tool
-
-from langgraph.graph import MessagesState, END
+from langgraph.graph import MessagesState
 from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
@@ -19,7 +16,6 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.managed import RemainingSteps
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda, RunnableSerializable
-
 from agents.llama_guard import LlamaGuard, LlamaGuardOutput, SafetyAssessment
 
 # Model Safety Guard
@@ -38,8 +34,8 @@ class AgentState(MessagesState, total=False):
 
 def format_safety_message(safety: LlamaGuardOutput) -> AIMessage:
     content = (
-        f"This conversation was flagged for unsafe content: {
-            ', '.join(safety.unsafe_categories)}"
+        f"This conversation was flagged for unsafe content: "
+        f"{', '.join(safety.unsafe_categories)}"
     )
     return AIMessage(content=content)
 
@@ -68,73 +64,59 @@ def python_repl_tool(
     you should print it out with `print(...)`. This is visible to the user."""
     try:
         result = repl.run(code)
+        return {"success": True, "output": result}
     except BaseException as e:
-        return f"Failed to execute. Error: {repr(e)}"
-    return f"Successfully executed:\n```python\n{code}\n```\nStdout: {result}"
+        return {"success": False, "error": repr(e)}
 
 
 # LLM
 groq = ChatGroq(model='llama-3.3-70b-versatile')
 
-# Nodes and Agents
-members = ["pandas_agent", "matplotlib_agent", "sklearn_agent"]
-# Our team supervisor is an LLM node. It just picks the next agent to process
-# and decides when the work is completed
-options = members + ["FINISH"]
+class TaskClassifier(TypedDict):
+    task_type: Literal["pandas", "matplotlib", "sklearn"]
 
-
-def make_supervisor_node(llm: BaseChatModel, members: list[str]) -> str:
-    options = ["FINISH"] + members
+def classify_task(state: MessagesState) -> Command[Literal["pandas_agent", "matplotlib_agent", "sklearn_agent"]]:
+    
     system_prompt = (
-        "You are a supervisor tasked with managing a conversation between the"
-        f" following workers: {members}. Given the following user request,"
-        " respond with the worker to act next. Each worker will perform a"
-        " task and respond with their results and status. When finished,"
-        " respond with FINISH."
+        "You are a task classifier. Given the user's request, classify it into one of the following categories: "
+        "- 'pandas': for data analysis, filtering, and transformations. "
+        "- 'matplotlib': for data visualizations or plotting. "
+        "- 'sklearn': for machine learning model training, evaluation, or prediction."
     )
+    messages = [{"role": "system", "content": system_prompt}] + state["messages"]
+    response = groq.with_structured_output(TaskClassifier).invoke(messages)
+    task_type = response["task_type"]
 
-    class Router(TypedDict):
-        """Worker to route to next. If no workers needed, route to FINISH."""
-
-        next: Literal[*options]  # type: ignore
-
-    # type: ignore
-    def supervisor_node(state: MessagesState) -> Command[Literal[*members, "__end__"]]:
-        """An LLM-based router."""
-        messages = [
-            {"role": "system", "content": system_prompt},
-        ] + state["messages"]
-        response = llm.with_structured_output(Router).invoke(messages)
-        goto = response["next"]
-        if goto == "FINISH":
-            goto = END
-
-        return Command(goto=goto)
-
-    return supervisor_node
+    if task_type == "pandas":
+        return Command(goto="pandas_agent")
+    elif task_type == "matplotlib":
+        return Command(goto="matplotlib_agent")
+    elif task_type == "sklearn":
+        return Command(goto="sklearn_agent")
+    return Command(goto=END)
 
 
 def make_react_node(llm: BaseChatModel,
                     state_modifier: str,
                     node_name: str,
-                    tools: list[Tool] = [python_repl_tool],) -> str:
+                    tools: list[Tool] = [python_repl_tool]) -> str:
 
     agent = create_react_agent(
         llm, tools=tools, state_modifier=state_modifier
     )
 
-    def node(state: MessagesState) -> Command[Literal["supervisor"]]:
+    def node(state: MessagesState) -> Command:
         result = agent.invoke(state)
-        return Command(
-            update={
-                "messages": [
-                    HumanMessage(
-                        content=result["messages"][-1].content, name=node_name)
-                ]
-            },
-            goto="supervisor",
-        )
+        response_message = result["messages"][-1].content
+
+        # Properly handle success and failure
+        if "success" in response_message and "error" not in response_message:
+            return Command(update={"messages": [HumanMessage(content=response_message)]}, goto=END)
+
+        return Command(update={"messages": [HumanMessage(content="An error occurred during processing")]}, goto=END)
+
     return node
+
 
 # Check for unsafe input and block further processing if found
 
@@ -149,34 +131,54 @@ def check_safety(state: AgentState) -> Literal["unsafe", "safe"]:
 
 
 pandas_node = make_react_node(llm=groq,
-                              state_modifier="You are a data analyst expert in python library pandas",
+                              state_modifier=(
+        "You are a data analysis expert specializing in the Python library Pandas. "
+        "Your task is to write efficient, clean, and optimized code for data manipulation, aggregation, filtering, and analysis. "
+        "Whenever you generate code, ensure that: "
+        "- The data is handled using appropriate Pandas functions. "
+        "- Edge cases like missing or duplicate data are properly handled. "
+        "- The output is well-structured and easy to interpret."
+    ),
                               node_name='pandas_agent')
 matplotlib_node = make_react_node(llm=groq,
-                                  state_modifier="You are a plotting and visualization expert in python library matplotlib",
+                                  state_modifier=(
+        "You are a data visualization expert specializing in the Python library Matplotlib. "
+        "Your task is to generate clear, informative, and visually appealing plots based on user-provided data or requirements. "
+        "Whenever you generate plots, ensure that: "
+        "- The appropriate plot type (e.g., bar, scatter, line) is selected based on the data. "
+        "- Titles, labels, and legends are correctly added to enhance readability. "
+        "- Customizations (e.g., colors, gridlines) are applied when necessary."
+    ),
                                   node_name='matplotlib_agent')
 sklearn_node = make_react_node(llm=groq,
-                               state_modifier="You are a machine learning expert in python library scikit-learn",
+                               state_modifier=(
+        "You are a machine learning expert specializing in the Python library scikit-learn. "
+        "Your task is to generate code for model training, evaluation, and predictions using appropriate algorithms and preprocessing steps. "
+        "Whenever you generate machine learning code, ensure that: "
+        "- The dataset is preprocessed correctly (e.g., missing data handling, feature scaling). "
+        "- The model selection is based on the given task (classification, regression, etc.). "
+        "- The output includes model evaluation metrics (e.g., accuracy, F1-score)."
+    ),
                                node_name='sklearn_agent')
 
-supervisor_node = make_supervisor_node(
-    groq, ["pandas_agent", "matplotlib_agent", "sklearn_agent"])
+def supervisor_node(state: MessagesState) -> Command[Literal["FINISH"]]:
+    return Command(goto=END)
 
 agent = StateGraph(AgentState)
 agent.add_node("guard_input", llama_guard_input)
 agent.add_node("block_unsafe_content", block_unsafe_content)
-agent.add_node("supervisor", supervisor_node)
+agent.add_node("classify_task", classify_task)
 agent.add_node("pandas_agent", pandas_node)
 agent.add_node("matplotlib_agent", matplotlib_node)
 agent.add_node("sklearn_agent", sklearn_node)
+
 agent.set_entry_point("guard_input")
 
-# Add conditional edges to the graph
-agent.add_conditional_edges(
-    "guard_input", check_safety, {
-        "unsafe": "block_unsafe_content", "safe": "supervisor"}
-)
-# Always END after blocking unsafe content
+# Edges for safety and task routing
+agent.add_conditional_edges("guard_input", check_safety, {"unsafe": "block_unsafe_content", "safe": "classify_task"})
+agent.add_edge("pandas_agent", END)
+agent.add_edge("matplotlib_agent", END)
+agent.add_edge("sklearn_agent", END)
 agent.add_edge("block_unsafe_content", END)
 
-# checkpointer=MemorySaver())
 spd_agent = agent.compile(checkpointer=MemorySaver())

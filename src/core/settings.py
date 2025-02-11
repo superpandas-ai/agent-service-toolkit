@@ -1,5 +1,6 @@
 from typing import Annotated, Any
-
+from dotenv import load_dotenv
+from pathlib import Path
 from dotenv import find_dotenv
 from pydantic import BeforeValidator, HttpUrl, SecretStr, TypeAdapter, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,8 @@ def check_str_is_http(x: str) -> str:
     http_url_adapter = TypeAdapter(HttpUrl)
     return str(http_url_adapter.validate_python(x))
 
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -73,7 +76,7 @@ class Settings(BaseSettings):
             Provider.FAKE: self.USE_FAKE_MODEL,
         }
         active_keys = [k for k, v in api_keys.items() if v]
-        if not active_keys:
+        if not active_keys and not self.GROQ_API_KEY:
             raise ValueError("At least one LLM API key must be provided.")
 
         for provider in active_keys:

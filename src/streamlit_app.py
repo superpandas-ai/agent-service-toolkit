@@ -2,12 +2,10 @@ import asyncio
 import os
 import urllib.parse
 from collections.abc import AsyncGenerator
-
 import streamlit as st
 from dotenv import load_dotenv
 from pydantic import ValidationError
 from streamlit.runtime.scriptrunner import get_script_run_ctx
-
 from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage
 from schema.task_data import TaskData, TaskDataStatus
@@ -55,8 +53,8 @@ async def main() -> None:
         load_dotenv()
         agent_url = os.getenv("AGENT_URL")
         if not agent_url:
-            host = os.getenv("HOST", "0.0.0.0")
-            port = os.getenv("PORT", 8080)
+            host = os.getenv("HOST", "127.0.0.1")
+            port = int(os.getenv("PORT", 8080))
             agent_url = f"http://{host}:{port}"
         try:
             with st.spinner("Connecting to agent service..."):

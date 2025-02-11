@@ -151,9 +151,16 @@ async def message_generator(
             and any(t.startswith("graph:step:") for t in event.get("tags", []))
         ):
             if isinstance(event["data"]["output"], Command):
-                new_messages = event["data"]["output"].update.get("messages", [])
+                print("DEBUG: Event output structure:", event["data"]["output"])
+
+                if event["data"]["output"].update:
+                    new_messages = event["data"]["output"].update.get("messages", [])
+                else:
+                    new_messages = []  # No messages to process if update is None
+            
             elif "messages" in event["data"]["output"]:
                 new_messages = event["data"]["output"]["messages"]
+
 
         # Also yield intermediate messages from agents.utils.CustomData.adispatch().
         if event["event"] == "on_custom_event" and "custom_data_dispatch" in event.get("tags", []):
